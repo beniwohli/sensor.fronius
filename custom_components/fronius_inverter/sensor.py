@@ -1,6 +1,7 @@
 """Support for the Fronius Inverter."""
 import logging
 from datetime import timedelta
+import asyncio
 
 import requests
 import voluptuous as vol
@@ -36,6 +37,7 @@ CONF_POWER_UNITS = 'power_units'
 CONF_POWERFLOW = 'powerflow'
 CONF_SMARTMETER = 'smartmeter'
 CONF_SMARTMETER_DEVICE_ID = 'smartmeter_device_id'
+CONF_BATTERY_STORAGE = 'battery_storage'
 
 DEFAULT_SCAN_INTERVAL = timedelta(seconds=60)
 
@@ -59,6 +61,8 @@ SENSOR_TYPES = {
     'panel_status': ['powerflow', False, 'P_PV', 'Panel Status', 'W', 'power', 'mdi:solar-panel'],
     'rel_autonomy': ['powerflow', False, 'rel_Autonomy', 'Relative Autonomy', '%', False, 'mdi:solar-panel'],
     'rel_selfconsumption': ['powerflow', False, 'rel_SelfConsumption', ' Relative Self Consumption', '%', False, 'mdi:solar-panel'],
+    'battery_load': ['battery', False, 'P_Akku', 'Battery Usage', 'W', 'power', 'mdi:battery'],
+    'battery_percentage': ['battery', False, 'SOC', 'Battery Percentage', '%', False, 'mdi:battery'],
     'smartmeter_current_ac_phase_one': ['smartmeter', False, 'Current_AC_Phase_1', 'SmartMeter Current AC Phase 1', 'A', False, 'mdi:solar-power'],
     'smartmeter_current_ac_phase_two': ['smartmeter', False, 'Current_AC_Phase_2', 'SmartMeter Current AC Phase 2', 'A', False, 'mdi:solar-power'],
     'smartmeter_current_ac_phase_three': ['smartmeter', False, 'Current_AC_Phase_3', 'SmartMeter Current AC Phase 3', 'A', False, 'mdi:solar-power'],
@@ -84,6 +88,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
         vol.All(cv.ensure_list, [vol.In(SENSOR_TYPES)]),
     vol.Optional(CONF_SMARTMETER, default=False): cv.boolean,
     vol.Optional(CONF_SMARTMETER_DEVICE_ID, default='0'): cv.string,
+    vol.Optional(CONF_BATTERY_STORAGE, default=False): cv.boolean,
 })
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
@@ -99,6 +104,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     powerflow = config.get(CONF_POWERFLOW)
     smartmeter = config.get(CONF_SMARTMETER)
     smartmeter_device_id = config.get(CONF_SMARTMETER_DEVICE_ID)
+    battery_storage = config.get(CONF_BATTERY_STORAGE)
     scan_interval = config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
 
     fetchers = []
@@ -143,6 +149,10 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
             
         elif device == "powerflow" and powerflow:
             _LOGGER.debug("Adding powerflow sensor: {}, {}, {}, {}, {}, {}, {}, {}".format(powerflow_data, name, variable, scope, sensor_units, device_id, powerflow, smartmeter))
+            dev.append(FroniusSensor(powerflow_data, name, variable, scope, sensor_units, device_id, powerflow, smartmeter))
+        
+        elif device == "battery" and (battery_storage and powerflow):
+            _LOGGER.debug("Adding battery sensor: {}, {}, {}, {}, {}, {}, {}, {}".format(powerflow_data, name, variable, scope, sensor_units, device_id, powerflow, smartmeter))
             dev.append(FroniusSensor(powerflow_data, name, variable, scope, sensor_units, device_id, powerflow, smartmeter))
         
         elif device == "smartmeter" and smartmeter:
@@ -244,7 +254,7 @@ class FroniusSensor(Entity):
                             _LOGGER.debug(">>>>> Converting {} from null to 0".format(self._json_key))
                             value = 0
                         state = state + value
-            elif self._device == 'powerflow' or self._device == 'smartmeter':
+            elif self._device in ('powerflow', 'smartmeter', "battery"):
                 # Read data directly, if it is 'null' convert it to 0
                 state = self._data.latest_data[self._json_key]
                 if state is None:
@@ -378,7 +388,11 @@ class PowerflowData(FroniusFetcher):
     async def _update(self):
         """Get the latest data from inverter."""
         _LOGGER.debug("Requesting powerflow data")
-        self._data = (await self.fetch_data(self._build_url()))['Body']['Data']['Site']
+        data = await self.fetch_data(self._build_url())
+        site_data = data['Body']['Data']['Site']
+        site_data.update(data['Body']['Data']['Inverters']['1'])
+        self._data = site_data
+
 
 class SmartMeterData(FroniusFetcher):
     """Handle Fronius API object and limit updates."""
