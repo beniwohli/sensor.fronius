@@ -7,16 +7,23 @@ import requests
 import voluptuous as vol
 import json
 import aiohttp
+import asyncio
 
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import homeassistant.helpers.config_validation as cv
-from homeassistant.components.sensor import PLATFORM_SCHEMA
+
 from homeassistant.const import (
-    CONF_MONITORED_CONDITIONS, CONF_NAME, CONF_SCAN_INTERVAL, ATTR_ATTRIBUTION, SUN_EVENT_SUNRISE, SUN_EVENT_SUNSET
-    )
+    CONF_MONITORED_CONDITIONS, CONF_NAME, CONF_SCAN_INTERVAL, ATTR_ATTRIBUTION, SUN_EVENT_SUNRISE, SUN_EVENT_SUNSET, STATE_UNAVAILABLE, DEVICE_CLASS_ENERGY, ENERGY_KILO_WATT_HOUR, ENERGY_WATT_HOUR, DEVICE_CLASS_POWER, POWER_KILO_WATT, POWER_WATT, DEVICE_CLASS_CURRENT, DEVICE_CLASS_VOLTAGE
+)
+
+from homeassistant.components.sensor import (
+    PLATFORM_SCHEMA, STATE_CLASS_MEASUREMENT, SensorEntity,
+)
+
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.entity import Entity
 from homeassistant.util.dt import utcnow as dt_utcnow, as_local
+from homeassistant.util import dt as dt_util
 from homeassistant.helpers.sun import get_astral_event_date
 
 _INVERTERRT = 'http://{}/solar_api/v1/GetInverterRealtimeData.cgi?Scope={}&DeviceId={}&DataCollection=CommonInverterData'
@@ -38,6 +45,7 @@ CONF_POWERFLOW = 'powerflow'
 CONF_SMARTMETER = 'smartmeter'
 CONF_SMARTMETER_DEVICE_ID = 'smartmeter_device_id'
 CONF_BATTERY_STORAGE = 'battery_storage'
+CONF_ALWAYS_LOG = 'always_log'
 
 DEFAULT_SCAN_INTERVAL = timedelta(seconds=60)
 
@@ -50,7 +58,7 @@ SENSOR_TYPES = {
     'year_energy': ['inverter', True, 'YEAR_ENERGY', 'Year Energy', 'MWh', 'energy', 'mdi:solar-power'],
     'total_energy': ['inverter', True, 'TOTAL_ENERGY', 'Total Energy', 'MWh', 'energy', 'mdi:solar-power'],
     'ac_power': ['inverter', True, 'PAC', 'AC Power', 'W', 'power', 'mdi:solar-power'],
-    'day_energy': ['inverter', True, 'DAY_ENERGY', 'Day Energy', 'kWh', False, 'mdi:solar-power'],
+    'day_energy': ['inverter', True, 'DAY_ENERGY', 'Day Energy', 'kWh', 'energy', 'mdi:solar-power'],
     'ac_current': ['inverter', False, 'IAC', 'AC Current', 'A', False, 'mdi:solar-power'],
     'ac_voltage': ['inverter', False, 'UAC', 'AC Voltage', 'V', False, 'mdi:solar-power'],
     'ac_frequency': ['inverter', False, 'FAC', 'AC Frequency', 'Hz', False, 'mdi:solar-power'],
@@ -89,6 +97,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_SMARTMETER, default=False): cv.boolean,
     vol.Optional(CONF_SMARTMETER_DEVICE_ID, default='0'): cv.string,
     vol.Optional(CONF_BATTERY_STORAGE, default=False): cv.boolean,
+    vol.Optional(CONF_ALWAYS_LOG, default=True): cv.boolean,
 })
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
@@ -106,6 +115,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     smartmeter_device_id = config.get(CONF_SMARTMETER_DEVICE_ID)
     battery_storage = config.get(CONF_BATTERY_STORAGE)
     scan_interval = config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+    always_log = config.get(CONF_ALWAYS_LOG)
 
     fetchers = []
     inverter_data = InverterData(session, ip_address, device_id, scope)
@@ -121,7 +131,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
         async def fetch_data(*_):
             await fetcher.async_update()
         return fetch_data
-    
+
     for fetcher in fetchers:
         fetch = fetch_executor(fetcher)
         await fetch()
@@ -142,14 +152,14 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
         sensor = "sensor." + name + "_" + SENSOR_TYPES[variable][3]
         state = hass.states.get(sensor)
-    
+
         if device == "inverter":
             _LOGGER.debug("Adding inverter sensor: {}, {}, {}, {}, {}, {}, {}, {}".format(inverter_data, name, variable, scope, sensor_units, device_id, powerflow, smartmeter))
-            dev.append(FroniusSensor(inverter_data, name, variable, scope, sensor_units, device_id, powerflow, smartmeter))
-            
+            dev.append(FroniusSensor(inverter_data, name, variable, scope, sensor_units, device_id, powerflow, smartmeter, always_log))
+
         elif device == "powerflow" and powerflow:
             _LOGGER.debug("Adding powerflow sensor: {}, {}, {}, {}, {}, {}, {}, {}".format(powerflow_data, name, variable, scope, sensor_units, device_id, powerflow, smartmeter))
-            dev.append(FroniusSensor(powerflow_data, name, variable, scope, sensor_units, device_id, powerflow, smartmeter))
+            dev.append(FroniusSensor(powerflow_data, name, variable, scope, sensor_units, device_id, powerflow, smartmeter, always_log))
         
         elif device == "battery" and (battery_storage and powerflow):
             _LOGGER.debug("Adding battery sensor: {}, {}, {}, {}, {}, {}, {}, {}".format(powerflow_data, name, variable, scope, sensor_units, device_id, powerflow, smartmeter))
@@ -157,14 +167,14 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
         
         elif device == "smartmeter" and smartmeter:
             _LOGGER.debug("Adding meter sensor: {}, {}, {}, {}, {}, {}, {}, {}".format(smartmeter_data, name, variable, scope, sensor_units, device_id, powerflow, smartmeter))
-            dev.append(FroniusSensor(smartmeter_data, name, variable, scope, sensor_units, device_id, powerflow, smartmeter))
+            dev.append(FroniusSensor(smartmeter_data, name, variable, scope, sensor_units, device_id, powerflow, smartmeter, always_log))
 
     async_add_entities(dev, True)
 
-class FroniusSensor(Entity):
+class FroniusSensor(SensorEntity):
     """Implementation of the Fronius inverter sensor."""
 
-    def __init__(self, device_data, name, sensor_type, scope, units, device_id, powerflow, smartmeter):
+    def __init__(self, device_data, name, sensor_type, scope, units, device_id, powerflow, smartmeter, always_log):
         """Initialize the sensor."""
         self._client = name
         self._device = SENSOR_TYPES[sensor_type][0]
@@ -181,6 +191,19 @@ class FroniusSensor(Entity):
         self._icon = SENSOR_TYPES[sensor_type][6]
         self._powerflow = powerflow
         self._smartmeter = smartmeter
+        self._always_log = always_log
+
+        # add device class and state class attributes to energy and power sensors to support long term statistics
+        # and energy dashboard, new in HA 2021.8. Ref https://developers.home-assistant.io/docs/core/entity/sensor/
+        if self._convert_units == "power":
+            self._attr_device_class = DEVICE_CLASS_POWER
+            self._attr_state_class = STATE_CLASS_MEASUREMENT
+        elif self._convert_units == "energy":
+            self._attr_device_class = DEVICE_CLASS_ENERGY
+            self._attr_state_class = STATE_CLASS_MEASUREMENT
+            self._attr_last_reset = dt_util.utc_from_timestamp(0)
+            # TODO: When HA 2021.9 is released (or at least before HA 2021.11) the two lines above should be replaced by the line below
+            #self._attr_state_class = STATE_CLASS_TOTAL_INCREASING
 
     @property
     def name(self):
@@ -194,6 +217,9 @@ class FroniusSensor(Entity):
 
     @property
     def available(self, utcnow=None):
+        if self._always_log:
+            return True
+
         if utcnow is None:
             utcnow = dt_utcnow()
         now = as_local(utcnow)
@@ -201,9 +227,12 @@ class FroniusSensor(Entity):
         start_time = self.find_start_time(now)
         stop_time = self.find_stop_time(now)
 
-        _LOGGER.debug("!!! Start Time, Stop Time, Device: {}, {}, {}".format(as_local(start_time), as_local(stop_time), self._device))
-
-        return True
+        if as_local(start_time) <= now <= as_local(stop_time):
+            _LOGGER.debug("Sensor is running. Start/Stop time: {}, {}".format(as_local(start_time), as_local(stop_time)))
+            return True
+        else:
+            _LOGGER.debug("Sensor is not running. Start/Stop time: {}, {}".format(as_local(start_time), as_local(stop_time)))
+            return False
 
     @property
     def unique_id(self):
@@ -236,6 +265,9 @@ class FroniusSensor(Entity):
 
     async def async_update(self, utcnow=None):
         """Get the latest data from inverter and update the states."""
+        if not self.available:
+            self._state = STATE_UNAVAILABLE
+            return
 
         state = None
         if self._data.latest_data and (self._json_key in self._data.latest_data):
@@ -337,7 +369,7 @@ class FroniusFetcher:
         # Schedule an update for all included sensors
         for sensor in self._sensors:
             sensor.async_schedule_update_ha_state(True)
-    
+
     async def fetch_data(self, url):
         """Retrieve data from inverter in async manner."""
         _LOGGER.debug("Requesting data from URL: %s", url)
