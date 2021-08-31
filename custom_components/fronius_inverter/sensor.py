@@ -163,7 +163,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
         
         elif device == "battery" and (battery_storage and powerflow):
             _LOGGER.debug("Adding battery sensor: {}, {}, {}, {}, {}, {}, {}, {}".format(powerflow_data, name, variable, scope, sensor_units, device_id, powerflow, smartmeter))
-            dev.append(FroniusSensor(powerflow_data, name, variable, scope, sensor_units, device_id, powerflow, smartmeter))
+            dev.append(FroniusSensor(powerflow_data, name, variable, scope, sensor_units, device_id, powerflow, smartmeter, always_log))
         
         elif device == "smartmeter" and smartmeter:
             _LOGGER.debug("Adding meter sensor: {}, {}, {}, {}, {}, {}, {}, {}".format(smartmeter_data, name, variable, scope, sensor_units, device_id, powerflow, smartmeter))
