@@ -392,7 +392,10 @@ class PowerflowData(FroniusFetcher):
         site_data = data['Body']['Data']['Site']
         site_data.update(data['Body']['Data']['Inverters']['1'])
         self._data = site_data
+<<<<<<< HEAD
 
+=======
+>>>>>>> master
 
 class SmartMeterData(FroniusFetcher):
     """Handle Fronius API object and limit updates."""
